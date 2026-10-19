@@ -2,6 +2,7 @@
 """Read the generated sales workbook and create Excel, PDF, and daily summaries."""
 
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -47,21 +48,80 @@ def read_sales_workbook(input_path: Path) -> List[Dict[str, object]]:
     """入力ブックのシート構成と見出しを検証し、明細を辞書の一覧にする。"""
     # 読み取り専用モードで開き、元ファイルを変更せずに処理する。
     workbook = load_workbook(input_path, read_only=True, data_only=True)
-    if len(workbook.sheetnames) != 9:
-        raise ValueError("入力Excelには店舗・日別の9シートが必要です")
-
     rows = []
-    for sheet in workbook.worksheets:
-        # 列の順番が変わっても誤集計しないよう、見出しを完全一致で確認する。
-        header = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True))
-        if list(header) != HEADERS:
-            raise ValueError("{} の1行目が想定した見出しと一致しません".format(sheet.title))
-        for values in sheet.iter_rows(min_row=2, values_only=True):
-            # Excel末尾に混じる空行は集計対象から除外する。
-            if not any(value is not None for value in values):
-                continue
-            rows.append(dict(zip(HEADERS, values)))
-    workbook.close()
+    try:
+        if len(workbook.sheetnames) != 9:
+            raise ValueError(
+                "入力Excelには店舗・日別の9シートが必要です（現在: {}シート: {}）".format(
+                    len(workbook.sheetnames), "、".join(workbook.sheetnames)
+                )
+            )
+
+        for sheet in workbook.worksheets:
+            # 見出し名から列位置を作るので、列の並び替えにも対応できる。
+            header = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), ())
+            header_positions = {}
+            for index, name in enumerate(header):
+                if name in HEADERS:
+                    if name in header_positions:
+                        raise ValueError("{} に見出し「{}」が重複しています".format(sheet.title, name))
+                    header_positions[name] = index
+            missing_headers = [name for name in HEADERS if name not in header_positions]
+            if missing_headers:
+                raise ValueError(
+                    "{} に必須見出しがありません: {}".format(
+                        sheet.title, "、".join(missing_headers)
+                    )
+                )
+
+            sheet_rows = 0
+            for row_number, values in enumerate(sheet.iter_rows(min_row=2, values_only=True), start=2):
+                # Excel末尾の完全な空行は無視し、途中の不完全な明細はシート名付きで知らせる。
+                if not any(value is not None for value in values):
+                    continue
+                row = {
+                    name: values[position] if position < len(values) else None
+                    for name, position in header_positions.items()
+                }
+                missing_values = [name for name in HEADERS if row.get(name) is None]
+                if missing_values:
+                    raise ValueError(
+                        "{} の{}行目に明細の不足があります: {}".format(
+                            sheet.title, row_number, "、".join(missing_values)
+                        )
+                    )
+
+                # Excelの日付セルと文字列のどちらも、集計用のYYYY-MM-DDにそろえる。
+                sales_date = row["日付"]
+                if hasattr(sales_date, "date"):
+                    sales_date = sales_date.date()
+                if hasattr(sales_date, "isoformat"):
+                    sales_date = sales_date.isoformat()
+                row["日付"] = str(sales_date)
+                row["店舗"] = str(row["店舗"])
+                row["顧客ID"] = str(row["顧客ID"])
+                row["品目"] = str(row["品目"])
+
+                try:
+                    row["単価"] = int(row["単価"])
+                    row["数量"] = int(row["数量"])
+                    row["売上金額"] = int(row["売上金額"])
+                except (TypeError, ValueError):
+                    raise ValueError(
+                        "{} の{}行目に数値でない単価・数量・売上金額があります".format(
+                            sheet.title, row_number
+                        )
+                    )
+                if row["数量"] <= 0 or row["単価"] < 0 or row["売上金額"] < 0:
+                    raise ValueError("{} の{}行目に不正な数値があります".format(sheet.title, row_number))
+                rows.append(row)
+                sheet_rows += 1
+
+            if sheet_rows == 0:
+                raise ValueError("{} に売上明細がありません".format(sheet.title))
+    finally:
+        workbook.close()
+
     if not rows:
         raise ValueError("入力Excelに売上明細がありません")
     return rows
@@ -253,7 +313,25 @@ def write_pdf_and_manager_summary(
     dates = sorted({sales_date for sales_date, _ in grouped})
     pages = [draw_pdf_page(sales_date, grouped) for sales_date in dates]
     pdf_path = OUTPUT / "日次売上レポート.pdf"
-    pages[0].save(pdf_path, "PDF", resolution=150, save_all=True, append_images=pages[1:])
+    try:
+        pages[0].save(pdf_path, "PDF", resolution=150, save_all=True, append_images=pages[1:])
+    except PermissionError:
+        # PDFビューアーで既存ファイルが開かれている場合は、別名で出力を続ける。
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fallback_path = OUTPUT / "日次売上レポート_{}.pdf".format(timestamp)
+        pages[0].save(
+            fallback_path,
+            "PDF",
+            resolution=150,
+            save_all=True,
+            append_images=pages[1:],
+        )
+        print(
+            "警告: {} を上書きできません。PDFビューアーで開いていないか確認してください。".format(
+                pdf_path.name
+            )
+        )
+        print("今回のPDFは別名で保存しました: {}".format(fallback_path))
 
     summary_lines = []
     for sales_date in dates:
