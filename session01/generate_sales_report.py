@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""Generate reproducible retail sales demo files for a three-day report."""
+"""Read the generated sales workbook and create Excel, PDF, and daily summaries."""
 
-import argparse
-import csv
-import random
 from collections import Counter, defaultdict
-from datetime import date, timedelta
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -18,20 +14,8 @@ from PIL import Image, ImageDraw, ImageFont
 # スクリプトの場所を基準にすることで、どの作業ディレクトリからでも同じ場所へ出力する。
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "output"
-TSV_DIR = OUTPUT / "tsv"
 IMAGE_DIR = OUTPUT / "images"
-# 固定日付・乱数シードにより、記事や研修で同じサンプル結果を再現する。
-START_DATE = date(2026, 10, 1)
-RANDOM_SEED = 20261019
-# 店舗・商品・列名は、データ生成と集計で共通して使う設定値。
 STORES = ["東京駅前店", "横浜店", "大宮店"]
-PRODUCTS = [
-    ("コーヒー豆", 1200),
-    ("緑茶", 800),
-    ("クッキー", 450),
-    ("マグカップ", 1500),
-    ("ドリップバッグ", 600),
-]
 HEADERS = ["日付", "店舗", "顧客ID", "品目", "単価", "数量", "売上金額"]
 FONT_CANDIDATES = [
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc",
@@ -41,36 +25,6 @@ FONT_CANDIDATES = [
     "C:/Windows/Fonts/YuGothM.ttc",
     "C:/Windows/Fonts/meiryo.ttc",
 ]
-
-
-def generate_sales_data() -> List[Dict[str, object]]:
-    """店舗・日ごとに10顧客分の架空明細を作る。"""
-    # Randomをローカルに作り、他の処理の乱数状態に影響を与えない。
-    rng = random.Random(RANDOM_SEED)
-    rows = []
-
-    # 3日 × 3店舗 × 10顧客を回し、顧客ごとに購入する品目を決める。
-    for day_offset in range(3):
-        sales_date = START_DATE + timedelta(days=day_offset)
-        for store in STORES:
-            for customer_number in range(1, 11):
-                product_count = rng.randint(1, 3)
-                # 同じ顧客が同じ品目を重複して選ばないよう、sampleで品目を抽出する。
-                purchased_products = rng.sample(PRODUCTS, product_count)
-                for product_name, unit_price in purchased_products:
-                    quantity = rng.randint(1, 4)
-                    rows.append(
-                        {
-                            "日付": sales_date.isoformat(),
-                            "店舗": store,
-                            "顧客ID": "C{:03d}".format(customer_number),
-                            "品目": product_name,
-                            "単価": unit_price,
-                            "数量": quantity,
-                            "売上金額": unit_price * quantity,
-                        }
-                    )
-    return rows
 
 
 def group_sales(rows: List[Dict[str, object]]) -> Dict[Tuple[str, str], List[Dict[str, object]]]:
@@ -87,33 +41,6 @@ def top_products(rows: List[Dict[str, object]], limit: int = 3) -> List[Tuple[st
     for row in rows:
         quantities[str(row["品目"])] += int(row["数量"])
     return sorted(quantities.items(), key=lambda item: (-item[1], item[0]))[:limit]
-
-
-def write_tsv_files(grouped: Dict[Tuple[str, str], List[Dict[str, object]]]) -> None:
-    """店舗・日別の明細をExcelに貼り付けやすいTSVとして保存する。"""
-    for (sales_date, store), rows in grouped.items():
-        path = TSV_DIR / "{}_{}.tsv".format(sales_date, store)
-        # BOM付きUTF-8にして、日本語がExcelで文字化けしにくいようにする。
-        with path.open("w", encoding="utf-8-sig", newline="") as file:
-            writer = csv.DictWriter(file, fieldnames=HEADERS, delimiter="\t", lineterminator="\n")
-            writer.writeheader()
-            writer.writerows(rows)
-
-
-def write_input_workbook(grouped: Dict[Tuple[str, str], List[Dict[str, object]]]) -> Path:
-    """集計前の入力用ブックを作り、店舗・日別に9シートへ分ける。"""
-    workbook = Workbook()
-    # Workbook既定の空シートは不要なので、最初に削除してから必要なシートを作る。
-    workbook.remove(workbook.active)
-    for (sales_date, store), rows in sorted(grouped.items()):
-        sheet = workbook.create_sheet("{}_{}".format(sales_date[5:], store))
-        sheet.append(HEADERS)
-        for row in rows:
-            sheet.append([row[header] for header in HEADERS])
-        sheet.freeze_panes = "A2"
-    input_path = OUTPUT / "売上データ.xlsx"
-    workbook.save(input_path)
-    return input_path
 
 
 def read_sales_workbook(input_path: Path) -> List[Dict[str, object]]:
@@ -322,7 +249,7 @@ def draw_pdf_page(sales_date: str, grouped: Dict[Tuple[str, str], List[Dict[str,
 def write_pdf_and_manager_summary(
     grouped: Dict[Tuple[str, str], List[Dict[str, object]]],
 ) -> None:
-    """日付別PDFと、上司へ送る日ごと1行のテキストを保存する。"""
+    """日付別PDFと、1日につき3行程度の上司向け要約を保存する。"""
     dates = sorted({sales_date for sales_date, _ in grouped})
     pages = [draw_pdf_page(sales_date, grouped) for sales_date in dates]
     pdf_path = OUTPUT / "日次売上レポート.pdf"
@@ -330,43 +257,34 @@ def write_pdf_and_manager_summary(
 
     summary_lines = []
     for sales_date in dates:
+        if summary_lines:
+            summary_lines.append("")
         day_rows = [row for (row_date, _), rows in grouped.items() if row_date == sales_date for row in rows]
         store_totals = []
         for store in STORES:
             amount = sum(int(row["売上金額"]) for row in grouped[(sales_date, store)])
             store_totals.append("{} {:,}円".format(store, amount))
+        total_amount = sum(int(row["売上金額"]) for row in day_rows)
+        customer_count = len({(str(row["店舗"]), str(row["顧客ID"])) for row in day_rows})
         top_items = "、".join("{} {}個".format(product, quantity) for product, quantity in top_products(day_rows))
-        summary_lines.append("{}: {}。全店販売上位: {}。".format(sales_date, " / ".join(store_totals), top_items))
+        summary_lines.extend(
+            [
+                "{} 店舗別売上: {}".format(sales_date, " / ".join(store_totals)),
+                "全店売上: {:,}円 / 顧客数: {}人".format(total_amount, customer_count),
+                "販売上位: {}".format(top_items),
+            ]
+        )
     (OUTPUT / "上司向け日報.txt").write_text("\n".join(summary_lines) + "\n", encoding="utf-8-sig")
 
 
 def main() -> None:
-    """サンプル生成モードか、Excel読み込み・レポート作成モードを実行する。"""
-    parser = argparse.ArgumentParser(description="小売店の日次売上サンプル作成・集計")
-    parser.add_argument(
-        "--generate-sample",
-        action="store_true",
-        help="TSVと9シートの入力用Excelを作成する",
-    )
-    args = parser.parse_args()
+    """作成済みExcelを読み直し、集計結果とレポートを保存する。"""
     OUTPUT.mkdir(parents=True, exist_ok=True)
-    TSV_DIR.mkdir(parents=True, exist_ok=True)
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
     input_path = OUTPUT / "売上データ.xlsx"
-    if args.generate_sample:
-        # 合成データから貼り付け用TSVと、分析対象となるExcelを作成する。
-        generated_rows = generate_sales_data()
-        generated_groups = group_sales(generated_rows)
-        write_tsv_files(generated_groups)
-        write_input_workbook(generated_groups)
-        print("サンプル明細: {}行 / TSV: {}件 / 入力Excelシート: {}".format(
-            len(generated_rows), len(generated_groups), len(generated_groups)
-        ))
-        return
-
     if not input_path.exists():
-        raise FileNotFoundError("入力用Excelがありません。先に --generate-sample を実行してください")
-    # 2回目の実行ではExcelを読み直すため、Excelを直接編集した場合も同じ集計処理に反映される。
+        raise FileNotFoundError("入力用Excelがありません。先に create_sales_data.py を実行してください")
+    # Excelから再読込するため、ブックを編集した場合もその内容でレポートを作れる。
     rows = read_sales_workbook(input_path)
     grouped = group_sales(rows)
     write_workbook(grouped)

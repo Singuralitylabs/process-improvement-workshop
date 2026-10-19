@@ -1,22 +1,23 @@
 # 第1回: Pythonで小売店の日次売上を集計
 
-営業本部の集計担当者を想定し、3店舗・3日分の売上Excelを読み込んで、店舗別レポートと上司向け要約を作成します。サンプルはすべて架空のデータです。
+営業本部の集計担当者を想定し、架空の売上データをPythonで作成してExcelに保存し、そのExcelをあらためて読み込んで、店舗別レポートと上司向け要約を作成します。
 
 ## 内容
 
-- `generate_sales_report.py`: サンプルデータ作成、Excel読込・集計、レポート出力。主要な処理に日本語コメントを付けています。
+- `create_sales_data.py`: 再現可能な架空データを作成し、TSVと9シートの入力用Excelを出力します。
+- `generate_sales_report.py`: 入力用Excelを読み直し、集計Excel・PDF・日次要約を作成します。
 - `prompts/implementation.md`: AIエージェントへ実装を依頼するときのプロンプト例。
 - `requirements.txt`: Pythonライブラリの依存一覧。
 - `output/tsv/`: Excelに貼り付けられる店舗・日別のTSV 9ファイル。
 - `output/売上データ.xlsx`: 集計前の売上明細。店舗・日別に9シートあります。
 - `output/売上報告.xlsx`: 全体サマリーと店舗・日別シートを含む集計結果。
-- `output/日次売上レポート.pdf`: 1日1ページ、全3ページの店舗別レポート。
-- `output/上司向け日報.txt`: 1日1行、全3行の報告文。
+- `output/日次売上レポート.pdf`: Excelから読み直した内容をまとめた、1日1ページ・全3ページのレポート。
+- `output/上司向け日報.txt`: 店舗別売上と全店集計をまとめた、1日3行程度の報告文。
 - `output/images/`: 記事掲載用の明細・集計画像。
 
 ## 実行方法
 
-Python 3.8以降を用意し、このフォルダで以下を実行します。
+Python 3.8以降を用意し、このフォルダで仮想環境を作成します。
 
 ```bash
 python -m venv .venv
@@ -32,15 +33,20 @@ python -m venv .venv
 source .venv/bin/activate
 ```
 
-依存パッケージをインストールし、サンプルデータとレポートを生成します。
+依存パッケージをインストールします。
 
 ```bash
 python -m pip install -r requirements.txt
-python generate_sales_report.py --generate-sample
+```
+
+次の順に実行します。
+
+```bash
+python create_sales_data.py
 python generate_sales_report.py
 ```
 
-1つ目の実行でTSVと入力用Excelを `output/` に作り、2つ目の実行でExcelを読み込んでレポートを作成します。Excelを編集して再集計する場合は、データ生成コマンドを再実行せず、2つ目のコマンドだけ実行してください。
+1つ目でTSVと入力用Excelを `output/` に作成します。必要に応じてExcelを確認・編集した後、2つ目を実行すると、保存済みExcelの全シートを再読込して集計し、Excel・PDF・日次要約を作成します。Excelを編集して再集計する場合は、データ作成スクリプトを再実行せず、`generate_sales_report.py` だけ実行してください。
 
 ## データの前提
 
